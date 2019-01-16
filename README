@@ -1,0 +1,2 @@
+rds is a command that fetches AWS RDS credentials from AWS Secrets Manager
+and runs mysql command for those credentials.
