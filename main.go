@@ -7,36 +7,40 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
-		os.Exit(1)
+	log.SetFlags(0)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	flag.Parse()
+	if err := run(ctx, flag.Args()); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func run(args []string) error {
+func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New(usage)
+		return errors.New("no filter provided")
 	}
-	switch args[0] {
-	case "-h", "-help", "--help":
-		return errors.New(usage)
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return err
 	}
-	creds, err := credentials(args[0])
+	creds, err := credentials(ctx, secretsmanager.NewFromConfig(cfg), args[0])
 	if err != nil {
 		return err
 	}
@@ -66,6 +70,12 @@ func run(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	go func() {
+		<-ctx.Done()
+		if cmd.Process != nil {
+			cmd.Process.Signal(os.Interrupt)
+		}
+	}()
 	return cmd.Run()
 }
 
@@ -76,43 +86,32 @@ type dbSpec struct {
 	Port int    `json:"port"`
 }
 
-func credentials(filter string) (*dbSpec, error) {
-	sess, err := session.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	var svc *secretsmanager.SecretsManager
-	switch meta, err := ec2metadata.New(sess).GetInstanceIdentityDocument(); err {
-	case nil:
-		svc = secretsmanager.New(sess, aws.NewConfig().WithRegion(meta.Region))
-	default:
-		svc = secretsmanager.New(sess)
-	}
+func credentials(ctx context.Context, svc *secretsmanager.Client, filter string) (*dbSpec, error) {
 	var secretsList []string
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	err = svc.ListSecretsPagesWithContext(ctx, &secretsmanager.ListSecretsInput{},
-		func(page *secretsmanager.ListSecretsOutput, lastPage bool) bool {
-			for _, entry := range page.SecretList {
-				if !strings.Contains(*entry.Name, filter) {
-					continue
-				}
-				secretsList = append(secretsList, *entry.Name)
+	p := secretsmanager.NewListSecretsPaginator(svc, &secretsmanager.ListSecretsInput{})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range page.SecretList {
+			if s.Name == nil || !strings.Contains(*s.Name, filter) {
+				continue
 			}
-			return true
-		})
-	if err != nil {
-		return nil, err
+			secretsList = append(secretsList, *s.Name)
+		}
 	}
 	switch len(secretsList) {
 	case 0:
 		return nil, fmt.Errorf("no profile matching %q found", filter)
 	case 1:
 	default:
-		return nil, fmt.Errorf("filter matched multiple profiles:\n\n\t%s", strings.Join(secretsList, "\n\t"))
+		return nil, fmt.Errorf("filter matched multiple profiles:\n\t%s", strings.Join(secretsList, "\n\t"))
 	}
-	res, err := svc.GetSecretValueWithContext(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId: aws.String(secretsList[0]),
+	res, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+		SecretId: &secretsList[0],
 	})
 	if err != nil {
 		return nil, err
@@ -127,3 +126,9 @@ func credentials(filter string) (*dbSpec, error) {
 const usage = `Usage: rds filter [mysql args]
 
 where filter is a substring to match AWS Secrets Manager profile`
+
+func init() {
+	flag.Usage = func() {
+		fmt.Fprintln(flag.CommandLine.Output(), usage)
+	}
+}
