@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -44,7 +43,7 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	tf, err := ioutil.TempFile("", "wrap-")
+	tf, err := os.CreateTemp("", "wrap-")
 	if err != nil {
 		return err
 	}
