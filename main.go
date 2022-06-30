@@ -76,7 +76,7 @@ func run(ctx context.Context, args []string) error {
 			cmd.Process.Signal(os.Interrupt)
 		}
 	}()
-	return cmd.Run()
+	return withMysqlInstallHint(cmd.Run())
 }
 
 type dbSpec struct {
@@ -131,4 +131,16 @@ func init() {
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), usage)
 	}
+}
+
+func withMysqlInstallHint(werr error) error {
+	if !errors.Is(werr, exec.ErrNotFound) {
+		return werr
+	}
+	for _, cmd := range [...]string{"dnf", "yum", "apt"} {
+		if _, err := exec.LookPath(cmd); err == nil {
+			return fmt.Errorf("%w\ninstall mysql client with: %s install mysql", werr, cmd)
+		}
+	}
+	return werr
 }
