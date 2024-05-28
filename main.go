@@ -86,9 +86,17 @@ type dbSpec struct {
 }
 
 func credentials(ctx context.Context, svc *secretsmanager.Client, filter string) (*dbSpec, error) {
-	var secretsList []string
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// when filter is an exact match of the secret name
+	if res, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &filter}); err == nil {
+		creds := &dbSpec{}
+		if err := json.Unmarshal([]byte(*res.SecretString), creds); err != nil {
+			return nil, err
+		}
+		return creds, nil
+	}
+	var secretsList []string
 	p := secretsmanager.NewListSecretsPaginator(svc, &secretsmanager.ListSecretsInput{})
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
