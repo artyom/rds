@@ -2,6 +2,7 @@ module github.com/artyom/rds
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.27.16
+	github.com/aws/aws-sdk-go-v2/service/rds v1.79.2
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.29.1
 )
 
@@ -18,6 +19,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.24.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.28.10 // indirect
 	github.com/aws/smithy-go v1.20.2 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 )
 
 go 1.22.3

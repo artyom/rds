@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
@@ -25,13 +26,14 @@ func main() {
 	log.SetFlags(0)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	direct := flag.Bool("d", false, "use cluster primary endpoint, can be used to bypass RDS proxy")
 	flag.Parse()
-	if err := run(ctx, flag.Args()); err != nil {
+	if err := run(ctx, *direct, flag.Args()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, args []string) error {
+func run(ctx context.Context, direct bool, args []string) error {
 	if len(args) == 0 {
 		return errors.New("no filter provided")
 	}
@@ -42,6 +44,11 @@ func run(ctx context.Context, args []string) error {
 	creds, err := credentials(ctx, secretsmanager.NewFromConfig(cfg), args[0])
 	if err != nil {
 		return err
+	}
+	if direct {
+		if creds.Host, creds.Port, err = clusterHostPort(ctx, rds.NewFromConfig(cfg), creds.Cluster); err != nil {
+			return err
+		}
 	}
 	tf, err := os.CreateTemp("", "wrap-")
 	if err != nil {
@@ -79,10 +86,11 @@ func run(ctx context.Context, args []string) error {
 }
 
 type dbSpec struct {
-	User string `json:"username"`
-	Pass string `json:"password"`
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	User    string `json:"username"`
+	Pass    string `json:"password"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Cluster string `json:"dbClusterIdentifier"`
 }
 
 func credentials(ctx context.Context, svc *secretsmanager.Client, filter string) (*dbSpec, error) {
@@ -130,13 +138,16 @@ func credentials(ctx context.Context, svc *secretsmanager.Client, filter string)
 	return creds, nil
 }
 
-const usage = `Usage: rds filter [mysql args]
+const usage = `Usage: rds [flags] filter [mysql args]
 
-where filter is a substring to match AWS Secrets Manager profile`
+where filter is a substring to match AWS Secrets Manager profile
+
+Flags:`
 
 func init() {
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), usage)
+		flag.PrintDefaults()
 	}
 }
 
@@ -150,4 +161,15 @@ func withMysqlInstallHint(werr error) error {
 		}
 	}
 	return werr
+}
+
+func clusterHostPort(ctx context.Context, svc *rds.Client, clusterId string) (host string, port int, err error) {
+	res, err := svc.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: &clusterId})
+	if err != nil {
+		return "", 0, err
+	}
+	if l := len(res.DBClusters); l != 1 {
+		return "", 0, fmt.Errorf("DescribeDBClusters (%s) returned %d results instead of 1", clusterId, l)
+	}
+	return *res.DBClusters[0].Endpoint, int(*res.DBClusters[0].Port), nil
 }
