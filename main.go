@@ -76,13 +76,14 @@ func run(ctx context.Context, direct bool, args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	if err := withMysqlInstallHint(cmd.Start()); err != nil {
+		return err
+	}
 	go func() {
 		<-ctx.Done()
-		if cmd.Process != nil {
-			cmd.Process.Signal(os.Interrupt)
-		}
+		cmd.Process.Signal(os.Interrupt)
 	}()
-	return withMysqlInstallHint(cmd.Run())
+	return cmd.Wait()
 }
 
 type dbSpec struct {
