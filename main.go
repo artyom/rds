@@ -160,13 +160,13 @@ func withMysqlInstallHint(werr error) error {
 	return werr
 }
 
-func clusterHostPort(ctx context.Context, svc *rds.Client, clusterId string) (host string, port int, err error) {
-	res, err := svc.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: &clusterId})
+func clusterHostPort(ctx context.Context, svc *rds.Client, clusterID string) (host string, port int, err error) {
+	res, err := svc.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: &clusterID})
 	if err != nil {
 		return "", 0, err
 	}
 	if l := len(res.DBClusters); l != 1 {
-		return "", 0, fmt.Errorf("DescribeDBClusters (%s) returned %d results instead of 1", clusterId, l)
+		return "", 0, fmt.Errorf("DescribeDBClusters (%s) returned %d results instead of 1", clusterID, l)
 	}
 	return *res.DBClusters[0].Endpoint, int(*res.DBClusters[0].Port), nil
 }
