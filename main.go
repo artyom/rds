@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -71,19 +72,14 @@ func run(ctx context.Context, direct bool, args []string) error {
 		return err
 	}
 	args[0] = "--defaults-extra-file=/proc/self/fd/3"
-	cmd := exec.Command("mysql", args...)
+	cmd := exec.CommandContext(ctx, "mysql", args...)
 	cmd.ExtraFiles = []*os.File{tf}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	if err := withMysqlInstallHint(cmd.Start()); err != nil {
-		return err
-	}
-	go func() {
-		<-ctx.Done()
-		cmd.Process.Signal(os.Interrupt)
-	}()
-	return cmd.Wait()
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.SysProcAttr = &syscall.SysProcAttr{Foreground: true}
+	return withMysqlInstallHint(cmd.Run())
 }
 
 type dbSpec struct {
