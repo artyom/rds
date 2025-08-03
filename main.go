@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -78,7 +77,6 @@ func run(ctx context.Context, direct bool, args []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-	cmd.SysProcAttr = &syscall.SysProcAttr{Foreground: true}
 	return withMysqlInstallHint(cmd.Run())
 }
 
