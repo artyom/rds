@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -63,6 +66,9 @@ func run(ctx context.Context, direct bool, args []string) error {
 	if creds.Port > 0 {
 		fmt.Fprintf(buf, "port=%d\n", creds.Port)
 	}
+	if dbname := defaultSchema(creds.profile); dbname != "" {
+		fmt.Fprintf(buf, "database=%s\n", dbname)
+	}
 
 	if _, err := tf.Write(buf.Bytes()); err != nil {
 		return err
@@ -81,6 +87,7 @@ func run(ctx context.Context, direct bool, args []string) error {
 }
 
 type dbSpec struct {
+	profile string
 	User    string `json:"username"`
 	Pass    string `json:"password"`
 	Host    string `json:"host"`
@@ -93,7 +100,7 @@ func credentials(ctx context.Context, svc *secretsmanager.Client, filter string)
 	defer cancel()
 	// when filter is an exact match of the secret name
 	if res, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &filter}); err == nil {
-		creds := &dbSpec{}
+		creds := &dbSpec{profile: filter}
 		if err := json.Unmarshal([]byte(*res.SecretString), creds); err != nil {
 			return nil, err
 		}
@@ -126,7 +133,7 @@ func credentials(ctx context.Context, svc *secretsmanager.Client, filter string)
 	if err != nil {
 		return nil, err
 	}
-	creds := &dbSpec{}
+	creds := &dbSpec{profile: secretsList[0]}
 	if err := json.Unmarshal([]byte(*res.SecretString), creds); err != nil {
 		return nil, err
 	}
@@ -143,6 +150,9 @@ func init() {
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
+		if s := dbNamesFile(); s != "" {
+			fmt.Fprintf(flag.CommandLine.Output(), "\nDefine default databases as `entry_name = database_name`, one per line,\nin %q\n", s)
+		}
 	}
 }
 
@@ -168,3 +178,46 @@ func clusterHostPort(ctx context.Context, svc *rds.Client, clusterID string) (ho
 	}
 	return *res.DBClusters[0].Endpoint, int(*res.DBClusters[0].Port), nil
 }
+
+func defaultSchema(profile string) string {
+	fname := dbNamesFile()
+	if fname == "" {
+		return ""
+	}
+	f, err := os.Open(fname)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	for sc := bufio.NewScanner(f); sc.Scan(); {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != profile {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		for _, r := range value {
+			switch {
+			case '0' <= r && r <= '9':
+			case 'A' <= r && r <= 'Z':
+			case 'a' <= r && r <= 'z':
+			case r == '_':
+			default:
+				return ""
+			}
+		}
+		return value
+	}
+	return ""
+}
+
+var dbNamesFile = sync.OnceValue(func() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "rds", "default-databases.txt")
+})
