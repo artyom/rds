@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 )
 
 func main() {
@@ -98,23 +101,46 @@ type dbSpec struct {
 func credentials(ctx context.Context, svc *secretsmanager.Client, filter string) (*dbSpec, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// when filter is an exact match of the secret name
-	if res, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &filter}); err == nil {
-		creds := &dbSpec{profile: filter}
-		if err := json.Unmarshal([]byte(*res.SecretString), creds); err != nil {
+	var tagFilters map[string]string
+	if strings.HasPrefix(filter, "{") {
+		if err := json.Unmarshal([]byte(filter), &tagFilters); err != nil {
 			return nil, err
 		}
-		return creds, nil
+		if len(tagFilters) == 0 {
+			return nil, errors.New("empty filter provided")
+		}
+	} else {
+		// when filter is an exact match of the secret name
+		if res, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &filter}); err == nil {
+			creds := &dbSpec{profile: filter}
+			if err := json.Unmarshal([]byte(*res.SecretString), creds); err != nil {
+				return nil, err
+			}
+			return creds, nil
+		}
 	}
 	var secretsList []string
-	p := secretsmanager.NewListSecretsPaginator(svc, &secretsmanager.ListSecretsInput{})
+	input := &secretsmanager.ListSecretsInput{}
+	if tagFilters != nil {
+		input.Filters = []smtypes.Filter{{Key: smtypes.FilterNameStringTypeTagKey, Values: slices.Collect(maps.Keys(tagFilters))}}
+	} else {
+		input.Filters = []smtypes.Filter{{Key: smtypes.FilterNameStringTypeAll, Values: []string{filter}}}
+	}
+	p := secretsmanager.NewListSecretsPaginator(svc, input)
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range page.SecretList {
-			if s.Name == nil || !strings.Contains(*s.Name, filter) {
+			if s.Name == nil {
+				continue
+			}
+			if tagFilters != nil {
+				if !tagsMatch(tagFilters, s.Tags) {
+					continue
+				}
+			} else if !strings.Contains(*s.Name, filter) {
 				continue
 			}
 			secretsList = append(secretsList, *s.Name)
@@ -142,7 +168,9 @@ func credentials(ctx context.Context, svc *secretsmanager.Client, filter string)
 
 const usage = `Usage: rds [flags] filter [mysql args]
 
-where filter is a substring to match AWS Secrets Manager profile
+where filter is either:
+ - a substring to match against AWS Secrets Manager secret names
+ - a JSON object to match by tags, e.g. '{"env":"prod","app":"mydb"}'
 
 Flags:`
 
@@ -221,3 +249,23 @@ var dbNamesFile = sync.OnceValue(func() string {
 	}
 	return filepath.Join(dir, "rds", "default-databases.txt")
 })
+
+func tagsMatch(filters map[string]string, tags []smtypes.Tag) bool {
+	if len(filters) == 0 {
+		return false
+	}
+	var matches int
+	for _, t := range tags {
+		if t.Key == nil || t.Value == nil {
+			continue
+		}
+		if v, ok := filters[*t.Key]; ok {
+			if v != *t.Value {
+				return false
+			} else {
+				matches++
+			}
+		}
+	}
+	return matches == len(filters)
+}
