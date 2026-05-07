@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,7 +36,7 @@ func main() {
 	direct := flag.Bool("d", false, "use cluster primary endpoint, can be used to bypass RDS proxy")
 	flag.Parse()
 	if err := run(ctx, *direct, flag.Args()); err != nil {
-		log.Fatal(err)
+		log.Fatal(cmp.Or(context.Cause(ctx), err))
 	}
 }
 
